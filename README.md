@@ -16,9 +16,11 @@ Anonymous Apex would be simpler for testing the processor directly, but it bypas
 powershell:
 python .\scripts\simulate_orders_event.py
 
-Alternative to execute on Anonymous Apex
+Alternative Apex script to execute on Anonymous Apex
 \scripts\simulate_orders_batch.apex
 
+Apex script to delete all data related to the integration
+\scripts\clear_orders_integration_data.apex
 
 The script sends the challenge's full five-event sample sequence in one array. The first run should return HTTP 202; the third item is the repeated `evt_001` and should be marked `duplicate`. The resulting order statuses should be `ord_77d1e9 = Sent` and `ord_52ab10 = Cleared`. Running the script again replays all five events and should return HTTP 200 with duplicate item results.
 
