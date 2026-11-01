@@ -1,0 +1,6 @@
+.sf/
+.sfdx/
+outputs/
+work/
+**/staticresources/*.zip
+node_modules/
