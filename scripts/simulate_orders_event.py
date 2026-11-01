@@ -8,6 +8,7 @@ in-batch duplicate and an out-of-order event for the second order.
 import hashlib
 import hmac
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -90,24 +91,17 @@ EVENTS = [
         },
     },
 ]
-# Set these values for your Salesforce org before running the script.
-SF_INSTANCE_URL = "https://wise-unicorn-cwyfw1-dev-ed.trailblaze.my.salesforce.com"
-SF_ACCESS_TOKEN = "00Dfj00000nU06P!AQEAQJY.ktaB5cWTHk4AzskOXb213COZ5MqGHIHJP8Wgvts4DSoIGKZ5XyXInwEIBYzeMw1XaPBZISg063ky77oNwtKGOL6T"
-ORDERS_SHARED_SECRET = "orders-takehome-2026"
 
 
 def main() -> int:
-    instance_url = SF_INSTANCE_URL.rstrip("/")
-    access_token = SF_ACCESS_TOKEN
-    shared_secret = ORDERS_SHARED_SECRET
+    instance_url = os.environ.get("SF_INSTANCE_URL", "").rstrip("/")
+    access_token = os.environ.get("SF_ACCESS_TOKEN", "")
+    shared_secret = os.environ.get("ORDERS_SHARED_SECRET", "")
 
-    if (
-        "YOUR_DOMAIN" in instance_url
-        or not access_token
-        or access_token == "PASTE_YOUR_OAUTH_ACCESS_TOKEN_HERE"
-    ):
+    if not instance_url or not access_token or not shared_secret:
         print(
-            "Edit SF_INSTANCE_URL and SF_ACCESS_TOKEN near the top of this script first.",
+            "Set SF_INSTANCE_URL, SF_ACCESS_TOKEN, and ORDERS_SHARED_SECRET "
+            "in your environment before running this script.",
             file=sys.stderr,
         )
         return 2

@@ -1,28 +1,57 @@
 ## Design
 
-The authenticated Apex REST endpoint is `POST /services/apexrest/orders/events`. I chose an authenticated endpoint over a public Site because the sender can use a Salesforce integration user/OAuth client and the signature is then a second authentication/integrity check.
+The authenticated Apex REST endpoint is POST /services/apexrest/orders/events. I chose an authenticated endpoint over a public Site because the sender can use a Salesforce integration user/OAuth client and the signature is then a second authentication/integrity check.
 
-Salesforce stores a small current-state projection: an Account external ID, an Order custom object linked to Account, current status, and the last applied event timestamp/ID. A standard Orders related list on Account shows the result. An Orders Event row keyed by unique `event.id` is the durable idempotency receipt. Redeliveries with the same or older `occurredAt` are duplicates; if the same event ID arrives with a newer `occurredAt`, the receipt and order projection are refreshed to that newer version. Within one batch, the newest valid version of an event ID is selected; ties keep the first occurrence. A distinct event older than the current order timestamp is recorded but not applied. Salesforce is therefore sufficient for the CX status view; no callout to the fictional service is needed per event. Amount, participant, lines and account profile are omitted because this exercise asks for status and the webhook does not carry those fields.
+Salesforce stores a small current-state projection: an Account external ID, an Order custom object linked to Account, current status, and the last applied event timestamp/ID. A standard Orders related list on Account shows the result. An Orders Event row keyed by unique `event.id` is the durable idempotency receipt. Redeliveries with the same or older `occurredAt` are duplicates; if the same event ID arrives with a newer `occurredAt`, the receipt and order projection are refreshed to that newer version. Within one batch, the newest valid version of an event ID is selected; ties keep the first occurrence.
 
-The timestamp comparison assumes `occurredAt` is authoritative and timestamps are comparable for a given order. If the upstream system can emit equal timestamps with distinct transitions, I would ask for a monotonic sequence/version and use that instead. New event IDs are recorded even when stale, which keeps an audit trail and prevents repeated evaluation.
+The timestamp comparison assumes `occurredAt` is authoritative and timestamps are comparable for a given order.
+New event IDs are recorded even when stale, which keeps an audit trail and prevents repeated evaluation.
 
-Signature is computed over the original request-body Blob before parsing. The shared secret is stored in an org-level hierarchy custom setting and is not returned in responses. A request body may be one event JSON object or an array of event objects; a single object is normalized to a one-item batch. Each event is validated and processed independently. A malformed event is reported as `rejected` while valid events in the same array are still committed. The response is JSON with an item result for each event index. The endpoint returns 401 for an invalid signature, 400 if one or more items are malformed, 202 when at least one new event is recorded and there are no item validation errors, 200 when all well-formed items are duplicates, and 500 for processing failures. A scalar or invalid JSON body, or an invalid signature, rejects the whole request. Since the sender retries non-2xx responses, a 400 can cause valid items to be delivered again; event-ID receipts make those redeliveries duplicates. The supplied sample secret is only a fixture; replace it in any real deployment and restrict access to the setting.
+Signature is checked over the original request-body Blob before parsing. The shared secret is stored in an org-level hierarchy custom setting and is not returned in responses.
+A request body may be one event JSON object or an array of event objects; a single object is normalized to a one-item batch.
+Each event is validated and processed independently.
+A malformed event is reported as `rejected` while valid events in the same array are still committed.
+The response is JSON with an item result for each event index.
+The endpoint returns 401 for an invalid signature, 400 if one or more items are malformed, 202 when at least one new event is recorded and there are no item validation errors, 200 when all well-formed items are duplicates, and 500 for processing failures.
+A scalar or invalid JSON body, or an invalid signature, rejects the whole request. Since the sender retries non-2xx responses, a 400 can cause valid items to be delivered again; event-ID receipts make those redeliveries duplicates.
+
+## Setup and Testing
+
+### Prerequisites
+
+- A Salesforce user with API access. The endpoint uses Salesforce authentication in addition to the HMAC signature.
+- Python 3 for the HTTP simulation, or use the Anonymous Apex alternative below.
+- Deploy the Metadata to the org
+- Assingh the permission set Orders_Integration_User to the Test User.
+    The permission set grants access to the REST Apex class and the integration objects and fields. The user used for the simulator also needs the Salesforce **API Enabled** permission.
+
+The source includes the Account page layout with the Orders related list, the `Order__c` page layout,
+
+### Post-deploy configuration
+
+1. In **Setup → Custom Settings → Orders Integration Settings → Manage**, create the **Organization Default** record and set **Shared Secret** to the same value used by the simulator. `orders-takehome-2026` 
+2. Open or create the Salesforce Account for the sample account, and set its **Orders Account ID** field to `acct_8f3c2a`. The event handler matches an existing Account by this field; it does not create Accounts.
+3. The **Account Layout** already contains the **Orders** related list and the useful columns (**Order Name**, **Status**, **Last Event At**, and **Last Event Id**). If you do not deploy that layout, add the related list and columns manually.
+4. Configure the Python HTTP simulator in the current PowerShell session. Get the org URL with `sf org display --target-org orders-dev` and the OAuth token with `sf org auth show-access-token --target-org orders-dev`, then set the values as environment variables. Use the exact same shared secret as the org-level custom setting. 
+
+```powershell
+$env:SF_INSTANCE_URL = "https://your-domain.my.salesforce.com"
+$env:SF_ACCESS_TOKEN = "<OAuth access token>"
+$env:ORDERS_SHARED_SECRET = "<same value configured in the Custom Setting>"
+python .\scripts\simulate_orders_event.py
+```
+
+No Remote Site Setting or Named Credential is required. The implementation receives events and does not make outbound callouts to Orders.
 
 ## Simulate an event against deployed code
 
-The endpoint requires a Salesforce OAuth access token. A standalone script is available at `scripts/simulate_orders_event.py`. It signs the exact bytes it sends, which matters because signature verification is over the raw body. I chose this method over Anonymous Apex because it sends a real HTTP POST to the deployed endpoint, with OAuth authentication and an HMAC signature calculated over the request body. That lets me demonstrate signature validation, and the HTTP response.
-Anonymous Apex would be simpler for testing the processor directly, but it bypasses the REST endpoint and signature verification.
+The endpoint requires a Salesforce OAuth access token. A standalone script is available at `scripts/simulate_orders_event.py`. It signs the exact bytes it sends, which matters because signature verification is over the raw body. I chose Python over Anonymous Apex because it sends a real HTTP POST to the deployed endpoint, with OAuth authentication and an HMAC signature calculated over the request body. This demonstrates the endpoint, signature validation, and HTTP response. Anonymous Apex is available as an alternative for orgs where Python is unavailable; it invokes the REST handler from inside Salesforce rather than acting as an external webhook sender.
 
-powershell:
-python .\scripts\simulate_orders_event.py
+The Python and Anonymous Apex simulators send the challenge's full five-event sample sequence in one array. The first run should return HTTP 202; the third item is the repeated `evt_001` and should be marked `duplicate`. The resulting order statuses should be `ord_77d1e9 = Sent` and `ord_52ab10 = Cleared`. Replaying the same sequence should return HTTP 200 with duplicate item results.
 
-Alternative Apex script to execute on Anonymous Apex
-\scripts\simulate_orders_batch.apex
+Anonymous Apex alternative: `scripts/simulate_orders_batch.apex`.
 
-Apex script to delete all data related to the integration
-\scripts\clear_orders_integration_data.apex
-
-The script sends the challenge's full five-event sample sequence in one array. The first run should return HTTP 202; the third item is the repeated `evt_001` and should be marked `duplicate`. The resulting order statuses should be `ord_77d1e9 = Sent` and `ord_52ab10 = Cleared`. Running the script again replays all five events and should return HTTP 200 with duplicate item results.
+To delete the integration's sample data, execute `scripts/clear_orders_integration_data.apex` as Anonymous Apex.
 
 ## Tests
 
